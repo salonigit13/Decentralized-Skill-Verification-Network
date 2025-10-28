@@ -1,1 +1,168 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
 
+/**
+ * @title Decentralized Skill Verification Network
+ * @dev A protocol for verifying skills through expert validation and building immutable reputation
+ */
+contract SkillVerification {
+    
+    struct Skill {
+        string skillName;
+        address worker;
+        address validator;
+        uint256 stakeAmount;
+        bool isVerified;
+        uint256 timestamp;
+        string evidenceURI;
+    }
+    
+    struct Worker {
+        uint256[] skillIds;
+        uint256 reputationScore;
+        uint256 totalVerifiedSkills;
+    }
+    
+    struct Validator {
+        string[] expertiseAreas;
+        uint256 validationCount;
+        uint256 stakedAmount;
+        bool isActive;
+    }
+    
+    mapping(uint256 => Skill) public skills;
+    mapping(address => Worker) public workers;
+    mapping(address => Validator) public validators;
+    mapping(string => address[]) public skillToValidators;
+    
+    uint256 public skillCounter;
+    uint256 public constant MIN_STAKE = 0.01 ether;
+    uint256 public constant VALIDATOR_STAKE = 0.1 ether;
+    
+    event SkillSubmitted(uint256 indexed skillId, address indexed worker, string skillName, uint256 stakeAmount);
+    event SkillVerified(uint256 indexed skillId, address indexed validator, address indexed worker);
+    event ValidatorRegistered(address indexed validator, string[] expertiseAreas);
+    event DisputeRaised(uint256 indexed skillId, address indexed challenger);
+    
+    /**
+     * @dev Register as a validator with expertise areas
+     * @param _expertiseAreas Array of skill domains the validator can verify
+     */
+    function registerValidator(string[] memory _expertiseAreas) external payable {
+        require(msg.value >= VALIDATOR_STAKE, "Insufficient stake for validator");
+        require(_expertiseAreas.length > 0, "Must specify at least one expertise area");
+        require(!validators[msg.sender].isActive, "Already registered as validator");
+        
+        validators[msg.sender] = Validator({
+            expertiseAreas: _expertiseAreas,
+            validationCount: 0,
+            stakedAmount: msg.value,
+            isActive: true
+        });
+        
+        for (uint256 i = 0; i < _expertiseAreas.length; i++) {
+            skillToValidators[_expertiseAreas[i]].push(msg.sender);
+        }
+        
+        emit ValidatorRegistered(msg.sender, _expertiseAreas);
+    }
+    
+    /**
+     * @dev Submit a skill for verification with evidence
+     * @param _skillName Name of the skill to be verified
+     * @param _evidenceURI IPFS or external link to evidence/portfolio
+     * @param _preferredValidator Address of validator (or address(0) for random assignment)
+     */
+    function submitSkill(
+        string memory _skillName, 
+        string memory _evidenceURI,
+        address _preferredValidator
+    ) external payable {
+        require(msg.value >= MIN_STAKE, "Insufficient stake amount");
+        require(bytes(_skillName).length > 0, "Skill name cannot be empty");
+        
+        address assignedValidator = _preferredValidator;
+        
+        if (_preferredValidator == address(0)) {
+            address[] memory availableValidators = skillToValidators[_skillName];
+            require(availableValidators.length > 0, "No validators available for this skill");
+            assignedValidator = availableValidators[block.timestamp % availableValidators.length];
+        } else {
+            require(validators[_preferredValidator].isActive, "Invalid validator");
+        }
+        
+        skillCounter++;
+        skills[skillCounter] = Skill({
+            skillName: _skillName,
+            worker: msg.sender,
+            validator: assignedValidator,
+            stakeAmount: msg.value,
+            isVerified: false,
+            timestamp: block.timestamp,
+            evidenceURI: _evidenceURI
+        });
+        
+        workers[msg.sender].skillIds.push(skillCounter);
+        
+        emit SkillSubmitted(skillCounter, msg.sender, _skillName, msg.value);
+    }
+    
+    /**
+     * @dev Verify a skill submission as a validator
+     * @param _skillId ID of the skill to verify
+     * @param _approved Whether the skill is verified or rejected
+     */
+    function verifySkill(uint256 _skillId, bool _approved) external {
+        Skill storage skill = skills[_skillId];
+        require(msg.sender == skill.validator, "Only assigned validator can verify");
+        require(!skill.isVerified, "Skill already verified");
+        
+        if (_approved) {
+            skill.isVerified = true;
+            workers[skill.worker].totalVerifiedSkills++;
+            workers[skill.worker].reputationScore += 10;
+            
+            // Reward validator and return stake to worker
+            uint256 validatorReward = skill.stakeAmount / 10; // 10% fee
+            uint256 workerReturn = skill.stakeAmount - validatorReward;
+            
+            payable(skill.validator).transfer(validatorReward);
+            payable(skill.worker).transfer(workerReturn);
+            
+            validators[skill.validator].validationCount++;
+            
+            emit SkillVerified(_skillId, msg.sender, skill.worker);
+        } else {
+            // Rejected - stake goes to validator as compensation for time
+            payable(skill.validator).transfer(skill.stakeAmount);
+        }
+    }
+    
+    /**
+     * @dev Get all skills submitted by a worker
+     * @param _worker Address of the worker
+     * @return Array of skill IDs
+     */
+    function getWorkerSkills(address _worker) external view returns (uint256[] memory) {
+        return workers[_worker].skillIds;
+    }
+    
+    /**
+     * @dev Get worker's reputation score
+     * @param _worker Address of the worker
+     * @return Reputation score and total verified skills
+     */
+    function getWorkerReputation(address _worker) external view returns (uint256, uint256) {
+        Worker memory worker = workers[_worker];
+        return (worker.reputationScore, worker.totalVerifiedSkills);
+    }
+    
+    /**
+     * @dev Get validators for a specific skill
+     * @param _skillName Name of the skill
+     * @return Array of validator addresses
+     */
+    function getValidatorsForSkill(string memory _skillName) external view returns (address[] memory) {
+        return skillToValidators[_skillName];
+    }
+}
